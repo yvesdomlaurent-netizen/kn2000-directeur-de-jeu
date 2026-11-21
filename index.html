@@ -18,8 +18,8 @@
 </style>
 </head>
 <body>
-<h1>🎹 Démo « directeur de jeu » — style « test » digéré (35 pistes) <span class="lbl" id="ver">v3.10 — 2026-11-21</span></h1>
-<div class="row"><span class="lbl">Mode Follow : chaque accord joué est suivi immédiatement par l'accompagnement (notes tenues ré-articulées sur le nouvel accord). « attendu » = prochain accord de la progression démo (I–vi–ii–V : Cmaj7, Am7, Dm7, G7) ; il avance quand tu joues cet accord. Reconnaissance : table des qualités JazzLab, debounce 30 ms dès 3 notes + photo de l'accord. v3.10 = revoicing envoyé à l'instant ordonnancé de la pulsation (plus de décalage d'avance). v3.9 = log batché + reconnaissance accords rapide. Si la version affichée n'est pas v3.10, vide le cache (Ctrl+F5).</span></div>
+<h1>🎹 Démo « directeur de jeu » — style « test » digéré (35 pistes) <span class="lbl" id="ver">v3.11 — 2026-11-21</span></h1>
+<div class="row"><span class="lbl">Mode Follow : chaque accord joué est suivi par l'accompagnement, mais le changement d'accord n'est appliqué qu'à la frontière de pattern (comme le modèle : 1 accord par pattern de 2 mesures, jamais plusieurs dans la même mesure — reproduction rythmique identique). « attendu » = prochain accord de la progression démo (I–vi–ii–V). Reconnaissance : table JazzLab, debounce 30 ms dès 3 notes + photo de l'accord. v3.11 = application d'accord quantifiée à la frontière de pattern. v3.10 = revoicing à l'instant ordonnancé de la pulsation. Si la version affichée n'est pas v3.11, vide le cache (Ctrl+F5).</span></div>
 <div class="row">
   <span class="lbl">MIDI in</span><select id="midiIn"></select>
   <span class="lbl">MIDI out</span><select id="midiOut"></select>
@@ -110,16 +110,17 @@ function bindIn() {
 // ---------- Reconnaissance d'accord (cluster de notes, debounce court) ----------
 // Dès 3 notes : debounce 30 ms. Une photo (snap) de l'accord est gardée, donc un accord
 // bref (frappé-relâché vite) est quand même reconnu. Tout relâché -> réarmement.
-const cluster = new Map(); let debTimer = null; let snap = null; let lastRec = '';
+const cluster = new Map(); let debTimer = null; let snap = null; let snapUsed = false; let lastRec = ''; let released = false;
 function onMidi(ev) {
   const d = ev.data, st = d[0] & 0xf0;
   if (st === 0x90 && d[2] > 0) {
+    if (released) { lastRec = ''; released = false; }   // nouveau jeu après relâchement complet : réarme
     cluster.set(d[1], d[2]);
-    if (cluster.size >= 3) snap = new Map(cluster);
+    if (cluster.size >= 3) { snap = new Map(cluster); snapUsed = false; }
     armDebounce(cluster.size >= 3 ? 30 : 120);
   } else if (st === 0x80 || (st === 0x90 && d[2] === 0)) {
     cluster.delete(d[1]);   // pas de mise à jour de snap ici : on garde la photo la plus complète (au note-on)
-    if (!cluster.size) { lastRec = ''; }   // tout relâché : réarme la reconnaissance (snap sera consommé par recognize)
+    if (!cluster.size) released = true;   // tout relâché (snap éventuel sera ignoré si déjà logué)
     armDebounce(cluster.size >= 3 ? 30 : 120);
   }
 }
@@ -148,9 +149,12 @@ const QUALITIES = [
   ['mM7b5', [0,3,6,11]],
 ];
 function recognize() {
-  const src = cluster.size ? cluster : snap;      // cluster courant, sinon photo de l'accord relâché
-  if (!src || src.size < 2) return;
-  if (!cluster.size) snap = null;
+  let src;
+  if (cluster.size) src = cluster;                       // cluster courant
+  else {                                                 // sinon photo de l'accord relâché (une seule fois)
+    if (!snap || snapUsed || snap.size < 2) return;
+    src = snap; snapUsed = true; snap = null;
+  }
   const notes = [...src.keys()];
   const pcs = notes.map(n => n % 12);
   const bass = Math.min(...notes) % 12;
@@ -192,7 +196,7 @@ function onChordRecognized(root, q, name) {
   const ints = (QUALITIES.find(x => x[0] === q) || QUALITIES[0])[1];
   pendingChord = { name, root, q, ints };
   if (!playing) { followChord = pendingChord; pendingChord = null; advanceProg(followChord); }
-  log('👌 reconnu ' + name + (playing ? ' → application au prochain temps' : ''));
+  log('👌 reconnu ' + name + (playing ? ' → application à la prochaine frontière de pattern' : ''));
 }
 // avance la progression démo (affichage « attendu ») selon l'accord appliqué
 function advanceProg(c) {
@@ -251,6 +255,7 @@ function revoiceHeld(atTick, when) {
   if (chordKey(followChord) === chordKey(appliedChord)) { log('… revoice ignoré (accord identique: ' + followChord.name + ')'); return; }
   const PT = patternTicks(section);
   const local = ((atTick - patternStartTick) % PT + PT) % PT;
+  if (local === 0) return;   // frontière de pattern : aucune note tenue à ré-articuler, le pattern repart à zéro
   const held = [];
   for (const role of Object.keys(CATALOG[section] || {})) {
     if (role === 'Perc' || role === 'Drums') continue;   // sons de batterie, pas de hauteur
@@ -282,7 +287,8 @@ function schedule() {
   const horizon = performance.now() + 150;
   while (nextTickTime < horizon) {
     const t = tick;
-    if (mode === 'follow' && pendingChord && t % DIV === 0) {   // application au temps (pulsation)
+    const PT0 = patternTicks(section);
+    if (mode === 'follow' && pendingChord && t % PT0 === 0) {   // application UNIQUEMENT à la frontière de pattern (comme le modèle : 1 accord / pattern)
       followChord = pendingChord; pendingChord = null;
       log('🎼 accord envoyé au player: ' + followChord.name + ' (root ' + followChord.root + ', q "' + followChord.q + '")');
       advanceProg(followChord);
@@ -292,7 +298,7 @@ function schedule() {
       progIdx = (progIdx + 1) % PROG.length;                       // avance toutes les 2 mesures
       log('🎼 accord envoyé au player: ' + PROG[progIdx % PROG.length].name + ' (auto)');
     }
-    let PT = patternTicks(section);
+    let PT = PT0;
     if (t - patternStartTick >= PT) {                              // frontière de pattern
       patternStartTick = t;
       if (pendingSection) { section = pendingSection; pendingSection = null; log('▶ section: ' + section); PT = patternTicks(section); }
