@@ -18,7 +18,8 @@
 </style>
 </head>
 <body>
-<h1>🎹 Démo « directeur de jeu » — style « test » digéré (35 pistes)</h1>
+<h1>🎹 Démo « directeur de jeu » — style « test » digéré (35 pistes) <span class="lbl" id="ver">v3.1 — 2026-11-21</span></h1>
+<div class="row"><span class="lbl">Mode Follow : chaque accord joué est suivi immédiatement par l'accompagnement. « attendu » = prochain accord de la progression démo (I–vi–ii–V : Cmaj7, Am7, Dm7, G7) ; il avance quand tu joues cet accord. Si la version affichée n'est pas v3.1, vide le cache (Ctrl+F5).</span></div>
 <div class="row">
   <span class="lbl">MIDI in</span><select id="midiIn"></select>
   <span class="lbl">MIDI out</span><select id="midiOut"></select>
@@ -30,7 +31,7 @@
 </div>
 <div class="row">
   <span class="lbl">Accord joué :</span><span id="chord">—</span>
-  <span class="lbl">Position :</span><span id="pos">—</span>
+  <span class="lbl">attendu (progression) :</span><span id="pos">—</span>
   <span class="lbl">Section :</span>
   <button class="sec on" data-sec="Main A">Main A</button>
   <button class="sec" data-sec="Main B">Main B</button>
