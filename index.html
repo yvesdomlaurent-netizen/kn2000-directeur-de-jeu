@@ -18,8 +18,8 @@
 </style>
 </head>
 <body>
-<h1>🎹 Démo « directeur de jeu » — style « test » digéré (35 pistes) <span class="lbl" id="ver">v3.2 — 2026-11-21</span></h1>
-<div class="row"><span class="lbl">Mode Follow : chaque accord joué est suivi immédiatement par l'accompagnement (notes tenues ré-articulées sur le nouvel accord). « attendu » = prochain accord de la progression démo (I–vi–ii–V : Cmaj7, Am7, Dm7, G7) ; il avance quand tu joues cet accord. Si la version affichée n'est pas v3.2, vide le cache (Ctrl+F5).</span></div>
+<h1>🎹 Démo « directeur de jeu » — style « test » digéré (35 pistes) <span class="lbl" id="ver">v3.3 — 2026-11-21</span></h1>
+<div class="row"><span class="lbl">Mode Follow : chaque accord joué est suivi immédiatement par l'accompagnement (notes tenues ré-articulées sur le nouvel accord). « attendu » = prochain accord de la progression démo (I–vi–ii–V : Cmaj7, Am7, Dm7, G7) ; il avance quand tu joues cet accord. Reconnaissance : table des qualités JazzLab. Si la version affichée n'est pas v3.3, vide le cache (Ctrl+F5).</span></div>
 <div class="row">
   <span class="lbl">MIDI in</span><select id="midiIn"></select>
   <span class="lbl">MIDI out</span><select id="midiOut"></select>
@@ -95,9 +95,27 @@ function onMidi(ev) {
 }
 function armDebounce() { clearTimeout(debTimer); debTimer = setTimeout(recognize, 90); }
 const NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+// Table des qualités d'accords (table d'intervalles validée, notation JazzLab : C-7 = Cm7, ø = m7b5, ° = dim…)
+// L'ordre sert de départage à égalité : les qualités les plus usuelles passent avant (ex. D joué = D majeur, pas Dm).
 const QUALITIES = [
-  ['m7b5',[0,3,6,10]], ['dim',[0,3,6,9]], ['m7',[0,3,7,10]], ['7',[0,4,7,10]],
-  ['maj7',[0,4,7,11]], ['m6',[0,3,7,9]], ['6',[0,4,7,9]], ['m',[0,3,7]], ['M',[0,4,7]], ['sus4',[0,5,7]]
+  ['',      [0,4,7]],     // majeur
+  ['7',     [0,4,7,10]],
+  ['maj7',  [0,4,7,11]],
+  ['m7',    [0,3,7,10]],
+  ['6',     [0,4,7,9]],
+  ['m',     [0,3,7]],
+  ['m6',    [0,3,7,9]],
+  ['sus4',  [0,5,7]],
+  ['7sus4', [0,5,7,10]],
+  ['m7b5',  [0,3,6,10]],  // ø
+  ['dim',   [0,3,6,9]],   // °
+  ['aug',   [0,4,8]],
+  ['7#5',   [0,4,8,10]],
+  ['mM7',   [0,3,7,11]],
+  ['M7b5',  [0,4,6,11]],
+  ['b5',    [0,4,6]],
+  ['mb5',   [0,3,6]],
+  ['mM7b5', [0,3,6,11]],
 ];
 function recognize() {
   if (!cluster.size) return;
@@ -114,7 +132,7 @@ function recognize() {
       if (!best || cmpChord(c, best)) best = c;
     }
   if (!best || best.score < 2) return;
-  const name = NAMES[best.root] + (best.q === 'M' ? '' : best.q);
+  const name = NAMES[best.root] + best.q;
   $('chord').textContent = name;
   onChordRecognized(best.root, best.q, name);
 }
@@ -136,7 +154,7 @@ let followChord = null;
 function onChordRecognized(root, q, name) {
   if (mode !== 'follow') return;
   followChord = { name, root, q };   // l'accompagnement suit immédiatement l'accord joué
-  const match = (c) => c.root === root && (c.q === q || (q === 'M' && c.q === 'maj7'));
+  const match = (c) => c.root === root && (c.q === q || (q === '' && c.q === 'maj7'));
   const exp = expectedChord();
   if (match(exp)) {
     progIdx = (progIdx + 1) % PROG.length;
