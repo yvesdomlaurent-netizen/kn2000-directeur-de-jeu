@@ -18,8 +18,8 @@
 </style>
 </head>
 <body>
-<h1>🎹 Démo « directeur de jeu » — style « test » digéré (35 pistes) <span class="lbl" id="ver">v3.9 — 2026-11-21</span></h1>
-<div class="row"><span class="lbl">Mode Follow : chaque accord joué est suivi immédiatement par l'accompagnement (notes tenues ré-articulées sur le nouvel accord). « attendu » = prochain accord de la progression démo (I–vi–ii–V : Cmaj7, Am7, Dm7, G7) ; il avance quand tu joues cet accord. Reconnaissance : table des qualités JazzLab, debounce 30 ms dès 3 notes + photo de l'accord (reconnu même relâché vite). v3.9 = log épuré batché (réactivité) + reconnaissance d'accords plus réactive. v3.8 = note-off à la pulsation + percussions non transposées. Si la version affichée n'est pas v3.9, vide le cache (Ctrl+F5).</span></div>
+<h1>🎹 Démo « directeur de jeu » — style « test » digéré (35 pistes) <span class="lbl" id="ver">v3.10 — 2026-11-21</span></h1>
+<div class="row"><span class="lbl">Mode Follow : chaque accord joué est suivi immédiatement par l'accompagnement (notes tenues ré-articulées sur le nouvel accord). « attendu » = prochain accord de la progression démo (I–vi–ii–V : Cmaj7, Am7, Dm7, G7) ; il avance quand tu joues cet accord. Reconnaissance : table des qualités JazzLab, debounce 30 ms dès 3 notes + photo de l'accord. v3.10 = revoicing envoyé à l'instant ordonnancé de la pulsation (plus de décalage d'avance). v3.9 = log batché + reconnaissance accords rapide. Si la version affichée n'est pas v3.10, vide le cache (Ctrl+F5).</span></div>
 <div class="row">
   <span class="lbl">MIDI in</span><select id="midiIn"></select>
   <span class="lbl">MIDI out</span><select id="midiOut"></select>
@@ -246,12 +246,11 @@ function voicedNote(role, src, chord) {
 // Au changement d'accord (appliqué au temps) : coupe les notes tenues qui changent de hauteur
 // et les rejoue sur le nouvel accord. Les hauteurs inchangées (ou déjà présentes ailleurs) ne sont
 // pas re-frappées, et les notes commençant à cette pulsation sont envoyées par l'ordonnanceur.
-function revoiceHeld(atTick) {
+function revoiceHeld(atTick, when) {
   if (!playing || !outPort || mode !== 'follow' || !followChord) return;
   if (chordKey(followChord) === chordKey(appliedChord)) { log('… revoice ignoré (accord identique: ' + followChord.name + ')'); return; }
   const PT = patternTicks(section);
   const local = ((atTick - patternStartTick) % PT + PT) % PT;
-  const now = performance.now();
   const held = [];
   for (const role of Object.keys(CATALOG[section] || {})) {
     if (role === 'Perc' || role === 'Drums') continue;   // sons de batterie, pas de hauteur
@@ -271,8 +270,8 @@ function revoiceHeld(atTick) {
   let n = 0;
   for (const h of held) {
     if (h.oldNote === h.newNote) continue;                 // hauteur inchangée : on laisse sonner
-    outPort.send([0x80 | h.ch, h.oldNote, 0], now);
-    if (!staying.has(h.ch + '|' + h.newNote)) outPort.send([0x90 | h.ch, h.newNote, h.vel], now);   // pas de re-frappe si la hauteur est déjà tenue
+    outPort.send([0x80 | h.ch, h.oldNote, 0], when);       // revoicing à l'instant ordonnancé de la pulsation
+    if (!staying.has(h.ch + '|' + h.newNote)) outPort.send([0x90 | h.ch, h.newNote, h.vel], when);   // pas de re-frappe si la hauteur est déjà tenue
     n++;
   }
   log('↻ revoice ' + (appliedChord ? appliedChord.name : '—') + ' → ' + followChord.name + ' : ' + n + ' note(s) ré-articulée(s)');
@@ -287,7 +286,7 @@ function schedule() {
       followChord = pendingChord; pendingChord = null;
       log('🎼 accord envoyé au player: ' + followChord.name + ' (root ' + followChord.root + ', q "' + followChord.q + '")');
       advanceProg(followChord);
-      revoiceHeld(t);
+      revoiceHeld(t, nextTickTime);   // revoicing au même instant ordonnancé que la pulsation
     }
     if (mode === 'auto' && t % (2 * 4 * DIV) === 0 && t > patternStartTick) {
       progIdx = (progIdx + 1) % PROG.length;                       // avance toutes les 2 mesures
