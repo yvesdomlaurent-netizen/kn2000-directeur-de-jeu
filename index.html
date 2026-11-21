@@ -18,8 +18,8 @@
 </style>
 </head>
 <body>
-<h1>🎹 Démo « directeur de jeu » — style « test » digéré (35 pistes) <span class="lbl" id="ver">v3.8 — 2026-11-21</span></h1>
-<div class="row"><span class="lbl">Mode Follow : chaque accord joué est suivi immédiatement par l'accompagnement (notes tenues ré-articulées sur le nouvel accord). « attendu » = prochain accord de la progression démo (I–vi–ii–V : Cmaj7, Am7, Dm7, G7) ; il avance quand tu joues cet accord. Reconnaissance : table des qualités JazzLab. v3.8 = note-off envoyés à la pulsation de l'événement (plus de notes qui traînent/saturent) + pistes Perc/Drums non transposées (percussions fixes, plus de sifflet qui bouge). v3.7 = voicing sensible à la qualité + accord appliqué au temps, sans double frappe. Si la version affichée n'est pas v3.8, vide le cache (Ctrl+F5).</span></div>
+<h1>🎹 Démo « directeur de jeu » — style « test » digéré (35 pistes) <span class="lbl" id="ver">v3.9 — 2026-11-21</span></h1>
+<div class="row"><span class="lbl">Mode Follow : chaque accord joué est suivi immédiatement par l'accompagnement (notes tenues ré-articulées sur le nouvel accord). « attendu » = prochain accord de la progression démo (I–vi–ii–V : Cmaj7, Am7, Dm7, G7) ; il avance quand tu joues cet accord. Reconnaissance : table des qualités JazzLab, debounce 30 ms dès 3 notes + photo de l'accord (reconnu même relâché vite). v3.9 = log épuré batché (réactivité) + reconnaissance d'accords plus réactive. v3.8 = note-off à la pulsation + percussions non transposées. Si la version affichée n'est pas v3.9, vide le cache (Ctrl+F5).</span></div>
 <div class="row">
   <span class="lbl">MIDI in</span><select id="midiIn"></select>
   <span class="lbl">MIDI out</span><select id="midiOut"></select>
@@ -74,7 +74,20 @@ function fmtT() {
   const bar = Math.floor(beat / 4) + 1, b = Math.floor(beat % 4) + 1;
   return '[' + (ms / 1000).toFixed(2) + 's mes' + bar + '.' + b + ' t' + tick + ']';
 }
-const log = (m) => { const l = $('log'); l.textContent += fmtT() + ' ' + m + "\n"; l.scrollTop = l.scrollHeight; };
+// Log épuré : lignes bufferisées, écriture DOM batchée (toutes les 120 ms max) et plafond de 80 lignes,
+// pour ne pas ralentir la page pendant le jeu.
+const logBuf = []; let logTimer = null;
+const log = (m) => {
+  logBuf.push(fmtT() + ' ' + m);
+  if (logBuf.length > 80) logBuf.splice(0, logBuf.length - 80);
+  if (!logTimer) logTimer = setTimeout(flushLog, 120);
+};
+function flushLog() {
+  logTimer = null;
+  const l = $('log');
+  l.textContent = logBuf.join('\n') + '\n';
+  l.scrollTop = l.scrollHeight;
+}
 
 // ---------- MIDI ----------
 let midiAccess = null, outPort = null, inPort = null;
@@ -94,14 +107,23 @@ function bindIn() {
   if (inPort) inPort.onmidimessage = onMidi;
 }
 
-// ---------- Reconnaissance d'accord (cluster de notes, debounce 90 ms) ----------
-const cluster = new Map(); let debTimer = null;
+// ---------- Reconnaissance d'accord (cluster de notes, debounce court) ----------
+// Dès 3 notes : debounce 30 ms. Une photo (snap) de l'accord est gardée, donc un accord
+// bref (frappé-relâché vite) est quand même reconnu. Tout relâché -> réarmement.
+const cluster = new Map(); let debTimer = null; let snap = null; let lastRec = '';
 function onMidi(ev) {
   const d = ev.data, st = d[0] & 0xf0;
-  if (st === 0x90 && d[2] > 0) { cluster.set(d[1], d[2]); armDebounce(); }
-  else if (st === 0x80 || (st === 0x90 && d[2] === 0)) { cluster.delete(d[1]); armDebounce(); }
+  if (st === 0x90 && d[2] > 0) {
+    cluster.set(d[1], d[2]);
+    if (cluster.size >= 3) snap = new Map(cluster);
+    armDebounce(cluster.size >= 3 ? 30 : 120);
+  } else if (st === 0x80 || (st === 0x90 && d[2] === 0)) {
+    cluster.delete(d[1]);   // pas de mise à jour de snap ici : on garde la photo la plus complète (au note-on)
+    if (!cluster.size) { lastRec = ''; }   // tout relâché : réarme la reconnaissance (snap sera consommé par recognize)
+    armDebounce(cluster.size >= 3 ? 30 : 120);
+  }
 }
-function armDebounce() { clearTimeout(debTimer); debTimer = setTimeout(recognize, 90); }
+function armDebounce(ms) { clearTimeout(debTimer); debTimer = setTimeout(recognize, ms); }
 const NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
 // Table des qualités d'accords (table d'intervalles validée, notation JazzLab : C-7 = Cm7, ø = m7b5, ° = dim…)
 // L'ordre sert de départage à égalité : les qualités les plus usuelles passent avant (ex. D joué = D majeur, pas Dm).
@@ -126,8 +148,10 @@ const QUALITIES = [
   ['mM7b5', [0,3,6,11]],
 ];
 function recognize() {
-  if (!cluster.size) return;
-  const notes = [...cluster.keys()];
+  const src = cluster.size ? cluster : snap;      // cluster courant, sinon photo de l'accord relâché
+  if (!src || src.size < 2) return;
+  if (!cluster.size) snap = null;
+  const notes = [...src.keys()];
   const pcs = notes.map(n => n % 12);
   const bass = Math.min(...notes) % 12;
   let best = null;
@@ -141,6 +165,8 @@ function recognize() {
     }
   if (!best || best.score < 2) return;
   const name = NAMES[best.root] + best.q;
+  if (name === lastRec) return;      // même accord que la dernière reconnaissance : on ne re-logue pas
+  lastRec = name;
   $('chord').textContent = name;
   log('👆 notes ' + notes.join(',') + ' → reconnu ' + name);
   onChordRecognized(best.root, best.q, name);
