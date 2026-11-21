@@ -18,8 +18,8 @@
 </style>
 </head>
 <body>
-<h1>🎹 Démo « directeur de jeu » — style « test » digéré (35 pistes) <span class="lbl" id="ver">v3.1 — 2026-11-21</span></h1>
-<div class="row"><span class="lbl">Mode Follow : chaque accord joué est suivi immédiatement par l'accompagnement. « attendu » = prochain accord de la progression démo (I–vi–ii–V : Cmaj7, Am7, Dm7, G7) ; il avance quand tu joues cet accord. Si la version affichée n'est pas v3.1, vide le cache (Ctrl+F5).</span></div>
+<h1>🎹 Démo « directeur de jeu » — style « test » digéré (35 pistes) <span class="lbl" id="ver">v3.2 — 2026-11-21</span></h1>
+<div class="row"><span class="lbl">Mode Follow : chaque accord joué est suivi immédiatement par l'accompagnement (notes tenues ré-articulées sur le nouvel accord). « attendu » = prochain accord de la progression démo (I–vi–ii–V : Cmaj7, Am7, Dm7, G7) ; il avance quand tu joues cet accord. Si la version affichée n'est pas v3.2, vide le cache (Ctrl+F5).</span></div>
 <div class="row">
   <span class="lbl">MIDI in</span><select id="midiIn"></select>
   <span class="lbl">MIDI out</span><select id="midiOut"></select>
@@ -147,6 +147,7 @@ function onChordRecognized(root, q, name) {
     if (idx >= 0) { progIdx = idx; $('pos').textContent = 'attendu: ' + expectedChord().name; }
     log('🎶 accord ' + name + ' suivi (attendu ' + expectedChord().name + ')');
   }
+  revoiceHeld();   // notes tenues ré-articulées sur le nouvel accord
 }
 $('modeAuto').onclick = () => { mode = 'auto'; followChord = null; $('modeAuto').classList.add('on'); $('modeFollow').classList.remove('on'); };
 $('modeFollow').onclick = () => { mode = 'follow'; $('modeFollow').classList.add('on'); $('modeAuto').classList.remove('on'); };
@@ -158,9 +159,37 @@ document.querySelectorAll('.sec').forEach(b => b.onclick = () => {
 });
 
 // ---------- Player : horloge interne + ordonnanceur lookahead ----------
-let playing = false, tick = 0, schedTimer = null, nextTickTime = 0, patternStartTick = 0;
+let playing = false, tick = 0, schedTimer = null, nextTickTime = 0, patternStartTick = 0, lastDelta = 0;
 function msPerTick() { return 60000 / ($('bpm').value * DIV); }
 function currentChord() { return (mode === 'follow' && followChord) ? followChord : PROG[progIdx % PROG.length]; }
+
+// Au changement d'accord : coupe les notes actuellement tenues et les rejoue sur la nouvelle transposition.
+// (La note-off planifiée par l'ordonnanceur ciblera la nouvelle hauteur, puisqu'elle est calculée au moment de l'envoi.)
+function revoiceHeld() {
+  if (!playing || !outPort || mode !== 'follow' || !followChord) return;
+  const newDelta = followChord.root;
+  if (newDelta === lastDelta) return;
+  const PT = patternTicks(section);
+  const local = ((tick - patternStartTick) % PT + PT) % PT;
+  const now = performance.now();
+  for (const role of Object.keys(CATALOG[section] || {})) {
+    const tr = CATALOG[section][role];
+    for (const e of tr.ev) {
+      if (e[1] !== 1) continue;
+      let off = Infinity;   // note-off le plus proche après ce note-on (même note)
+      for (const o of tr.ev) if (o[1] === 0 && o[2] === e[2] && o[0] > e[0]) off = Math.min(off, o[0]);
+      if (e[0] <= local && local < off) {   // note actuellement tenue
+        const oldNote = Math.max(0, Math.min(127, e[2] + lastDelta));
+        const newNote = Math.max(0, Math.min(127, e[2] + newDelta));
+        if (oldNote !== newNote) {
+          outPort.send([0x80 | tr.ch, oldNote, 0], now);
+          outPort.send([0x90 | tr.ch, newNote, e[3]], now);
+        }
+      }
+    }
+  }
+  lastDelta = newDelta;
+}
 
 function schedule() {
   if (!playing || !outPort) return;
@@ -177,6 +206,7 @@ function schedule() {
     }
     const local = ((t - patternStartTick) % PT + PT) % PT;
     const delta = currentChord().root - 0;                          // les phrases source sont en CM7 (root C)
+    lastDelta = delta;
     for (const role of Object.keys(CATALOG[section] || {})) {
       const tr = CATALOG[section][role];
       for (const e of tr.ev) {
