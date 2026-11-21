@@ -18,8 +18,8 @@
 </style>
 </head>
 <body>
-<h1>🎹 Démo « directeur de jeu » — style « test » digéré (35 pistes) <span class="lbl" id="ver">v3.4 — 2026-11-21</span></h1>
-<div class="row"><span class="lbl">Mode Follow : chaque accord joué est suivi immédiatement par l'accompagnement (notes tenues ré-articulées sur le nouvel accord). « attendu » = prochain accord de la progression démo (I–vi–ii–V : Cmaj7, Am7, Dm7, G7) ; il avance quand tu joues cet accord. Reconnaissance : table des qualités JazzLab. v3.4 = log horodaté (seconde, mesure.temps, tick) pour le diagnostic. Si la version affichée n'est pas v3.4, vide le cache (Ctrl+F5).</span></div>
+<h1>🎹 Démo « directeur de jeu » — style « test » digéré (35 pistes) <span class="lbl" id="ver">v3.5 — 2026-11-21</span></h1>
+<div class="row"><span class="lbl">Mode Follow : chaque accord joué est suivi immédiatement par l'accompagnement (notes tenues ré-articulées sur le nouvel accord). « attendu » = prochain accord de la progression démo (I–vi–ii–V : Cmaj7, Am7, Dm7, G7) ; il avance quand tu joues cet accord. Reconnaissance : table des qualités JazzLab. v3.5 = log allégé (changements demandés + accords envoyés au player, horodaté seconde/mesure.temps). Si la version affichée n'est pas v3.5, vide le cache (Ctrl+F5).</span></div>
 <div class="row">
   <span class="lbl">MIDI in</span><select id="midiIn"></select>
   <span class="lbl">MIDI out</span><select id="midiOut"></select>
@@ -163,7 +163,7 @@ let followChord = null;
 function onChordRecognized(root, q, name) {
   if (mode !== 'follow') return;
   followChord = { name, root, q };   // l'accompagnement suit immédiatement l'accord joué
-  log('🎯 followChord = ' + name + ' (root ' + root + ', q "' + q + '")');
+  log('🎼 accord envoyé au player: ' + name + ' (root ' + root + ', q "' + q + '")');
   const match = (c) => c.root === root && (c.q === q || (q === '' && c.q === 'maj7'));
   const exp = expectedChord();
   if (match(exp)) {
@@ -177,8 +177,8 @@ function onChordRecognized(root, q, name) {
   }
   revoiceHeld();   // notes tenues ré-articulées sur le nouvel accord
 }
-$('modeAuto').onclick = () => { mode = 'auto'; followChord = null; $('modeAuto').classList.add('on'); $('modeFollow').classList.remove('on'); };
-$('modeFollow').onclick = () => { mode = 'follow'; $('modeFollow').classList.add('on'); $('modeAuto').classList.remove('on'); };
+$('modeAuto').onclick = () => { mode = 'auto'; followChord = null; $('modeAuto').classList.add('on'); $('modeFollow').classList.remove('on'); log('mode Auto (séquence)'); };
+$('modeFollow').onclick = () => { mode = 'follow'; $('modeFollow').classList.add('on'); $('modeAuto').classList.remove('on'); log('mode Follow (accords clavier)'); };
 document.querySelectorAll('.sec').forEach(b => b.onclick = () => {
   document.querySelectorAll('.sec').forEach(x => x.classList.remove('on'));
   b.classList.add('on');
@@ -188,7 +188,6 @@ document.querySelectorAll('.sec').forEach(b => b.onclick = () => {
 
 // ---------- Player : horloge interne + ordonnanceur lookahead ----------
 let playing = false, tick = 0, schedTimer = null, nextTickTime = 0, patternStartTick = 0, lastDelta = 0;
-const SEND_LOG = new Set(['Bass', 'Guit_Chord1', 'Piano_Chord2', 'Pad', 'Brass_Phrase1']);   // pupitres dont on logue les note-on
 function msPerTick() { return 60000 / ($('bpm').value * DIV); }
 function currentChord() { return (mode === 'follow' && followChord) ? followChord : PROG[progIdx % PROG.length]; }
 
@@ -198,10 +197,10 @@ function revoiceHeld() {
   if (!playing || !outPort || mode !== 'follow' || !followChord) return;
   const newDelta = followChord.root;
   if (newDelta === lastDelta) { log('… revoice ignoré (delta ' + newDelta + ' = lastDelta ' + lastDelta + ')'); return; }
-  log('↻ revoice: delta ' + lastDelta + ' → ' + newDelta);
   const PT = patternTicks(section);
   const local = ((tick - patternStartTick) % PT + PT) % PT;
   const now = performance.now();
+  let n = 0;
   for (const role of Object.keys(CATALOG[section] || {})) {
     const tr = CATALOG[section][role];
     for (const e of tr.ev) {
@@ -214,12 +213,14 @@ function revoiceHeld() {
         if (oldNote !== newNote) {
           outPort.send([0x80 | tr.ch, oldNote, 0], now);
           outPort.send([0x90 | tr.ch, newNote, e[3]], now);
-          log('↻ ch' + tr.ch + ' ' + oldNote + '→' + newNote);
+          n++;
         }
       }
     }
   }
+  const oldDelta = lastDelta;
   lastDelta = newDelta;
+  log('↻ revoice delta ' + oldDelta + '→' + newDelta + ' : ' + n + ' note(s) ré-articulée(s)');
 }
 
 function schedule() {
@@ -227,8 +228,10 @@ function schedule() {
   const horizon = performance.now() + 150;
   while (nextTickTime < horizon) {
     const t = tick;
-    if (mode === 'auto' && t % (2 * 4 * DIV) === 0 && t > patternStartTick)
+    if (mode === 'auto' && t % (2 * 4 * DIV) === 0 && t > patternStartTick) {
       progIdx = (progIdx + 1) % PROG.length;                       // avance toutes les 2 mesures
+      log('🎼 accord envoyé au player: ' + PROG[progIdx % PROG.length].name + ' (auto)');
+    }
     let PT = patternTicks(section);
     if (t - patternStartTick >= PT) {                              // frontière de pattern
       patternStartTick = t;
@@ -244,10 +247,8 @@ function schedule() {
       for (const e of tr.ev) {
         if (e[0] !== local) continue;
         const note = Math.max(0, Math.min(127, e[2] + delta));
-        if (e[1] === 1) {
-          outPort.send([0x90 | tr.ch, note, e[3]], nextTickTime);
-          if (SEND_LOG.has(role)) log('♪ on ch' + tr.ch + ' note ' + note + ' (' + role + ', delta ' + delta + ')');
-        } else outPort.send([0x80 | tr.ch, note, 0], nextTickTime + Math.max(30, e[3] * msPerTick() * 0.9));
+        if (e[1] === 1) outPort.send([0x90 | tr.ch, note, e[3]], nextTickTime);
+        else outPort.send([0x80 | tr.ch, note, 0], nextTickTime + Math.max(30, e[3] * msPerTick() * 0.9));
       }
     }
     tick++;
