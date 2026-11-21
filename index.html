@@ -1,3 +1,4 @@
+
 <!doctype html>
 <html lang="fr">
 <head>
@@ -18,8 +19,8 @@
 </style>
 </head>
 <body>
-<h1>🎹 Démo « directeur de jeu » — <span id="styleName">style…</span> <span class="lbl" id="ver">v3.13 — 2026-11-21</span></h1>
-<div class="row"><span class="lbl">Moteur générique + banque de styles externe : le style actif est chargé depuis <code>styles/&lt;id&gt;.js</code> (contrat <code>window.STYLE_DATA</code>), choisi par <code>?style=&lt;id&gt;</code> dans l'URL, le sélecteur, ou le 1<sup>er</sup> du manifeste <code>styles/styles.js</code> ; les boutons de sections sont générés depuis le style. Mode Follow : le changement d'accord s'applique dès la pulsation suivante (sans délai), en ne modifiant que la hauteur des notes : jamais le nombre ni les instants des notes envoyées (note-off appariés aux note-on). « attendu » = prochain accord de la progression démo (I–vi–ii–V, surchargeable par le style via <code>prog</code>). Reconnaissance : table JazzLab, debounce 30 ms dès 3 notes + photo de l'accord. v3.13 = split moteur/banque de styles. v3.12 = application immédiate, substitution de hauteur sans aucune note ajoutée. Si la version affichée n'est pas v3.13, vide le cache (Ctrl+F5).</span></div>
+<h1>🎹 Démo « directeur de jeu » — <span id="styleName">style…</span> <span class="lbl" id="ver">v3.14 — 2026-11-21</span></h1>
+<div class="row"><span class="lbl">Moteur générique + banque de styles externe : le style actif est chargé depuis un fichier <code>&lt;id&gt;.js</code> (contrat <code>window.STYLE_DATA</code>), choisi par <code>?style=&lt;id&gt;</code> dans l'URL, le sélecteur, ou le 1<sup>er</sup> du manifeste <code>styles.js</code> ; les boutons de sections sont générés depuis le style. <b>Source des styles (v3.14)</b> : par défaut le dossier relatif <code>styles/</code> à côté de la page ; sinon une <b>URL</b> (ex. mini serveur local <code>https://IP-du-PC:8734/styles/</code>, les fichiers y sont servis en statique, aucune modif serveur) ; ou des <b>fichiers locaux</b> choisis via 📁 (gardés en localStorage). Priorité : fichiers locaux &gt; URL &gt; dossier relatif. Mode Follow : le changement d'accord s'applique dès la pulsation suivante (sans délai), en ne modifiant que la hauteur des notes : jamais le nombre ni les instants des notes envoyées (note-off appariés aux note-on). « attendu » = prochain accord de la progression démo (I–vi–ii–V, surchargeable par le style via <code>prog</code>). Reconnaissance : table JazzLab, debounce 30 ms dès 3 notes + photo de l'accord. v3.13 = split moteur/banque de styles. v3.12 = application immédiate, substitution de hauteur sans aucune note ajoutée. Si la version affichée n'est pas v3.14, vide le cache (Ctrl+F5).</span></div>
 <div class="row">
   <span class="lbl">MIDI in</span><select id="midiIn"></select>
   <span class="lbl">MIDI out</span><select id="midiOut"></select>
@@ -31,6 +32,12 @@
   <span class="lbl">Style</span><select id="styleSel"></select>
 </div>
 <div class="row">
+  <span class="lbl">Source styles</span><input id="styleSrcUrl" type="text" placeholder="https://IP-du-PC:8734/styles/" style="width:230px" title="URL de base où trouver styles.js et <id>.js (ex. mini serveur local). Vide = dossier relatif styles/" />
+  <label class="lbl" style="cursor:pointer;border:1px solid #4a5a75;border-radius:6px;padding:4px 8px">📁 fichiers locaux<input type="file" id="styleFiles" multiple accept=".js" style="display:none" /></label>
+  <span class="lbl" id="srcInfo"></span>
+  <button id="btnClearLocal" title="Oublier les fichiers locaux mémorisés">🧹</button>
+</div>
+<div class="row">
   <span class="lbl">Accord joué :</span><span id="chord">—</span>
   <span class="lbl">attendu (progression) :</span><span id="pos">—</span>
   <span class="lbl">Section :</span>
@@ -38,32 +45,63 @@
 </div>
 <div id="log"></div>
 
-<script src="styles/styles.js"></script>
 <script>
 "use strict";
 // ---- Catalogue digéré depuis test (SMF parsé hors ligne) ----
 const DIV = 960;
-let CATALOG = {};   // sections du style actif (alimentées par window.STYLE_DATA, voir styles/<id>.js)
+let CATALOG = {};   // sections du style actif (alimentées par window.STYLE_DATA, voir <id>.js)
 let SECTIONS = [];
 let STYLE = null;
-// ---- Banque de styles externe ----
-// Le style actif est chargé depuis styles/<id>.js (qui pose window.STYLE_DATA), choisi par
-// ?style=<id> dans l'URL, sinon mémorisé (localStorage 'ddj-style'), sinon le 1er du manifeste
-// styles/styles.js (window.STYLE_MANIFEST). Ajouter un style = ajouter un fichier styles/<id>.js
-// + une entrée au manifeste : aucune retouche du moteur.
+// ---- Banque de styles externe (v3.14 : source configurable) ----
+// Le style actif est chargé depuis un fichier <id>.js (qui pose window.STYLE_DATA), choisi par
+// ?style=<id> dans l'URL, sinon mémorisé (localStorage 'ddj-style'), sinon le 1er du manifeste.
+// Source des fichiers, par priorité : 1) fichiers locaux (sélecteur 📁, localStorage 'ddj-local-styles'),
+// 2) URL de base (champ + localStorage 'ddj-style-src', ex. https://IP-du-PC:8734/styles/),
+// 3) dossier relatif styles/ à côté de la page. Aucun des trois ne nécessite de retoucher le moteur.
 const qs = new URLSearchParams(location.search);
 let currentStyleId = qs.get('style') || null;
 try { currentStyleId = currentStyleId || localStorage.getItem('ddj-style'); } catch (e) {}
-if (!currentStyleId && window.STYLE_MANIFEST && window.STYLE_MANIFEST.length) currentStyleId = window.STYLE_MANIFEST[0].id;
-function loadStyleScript(id) {
-  if (window.STYLE_DATA && window.STYLE_DATA.id === id) return Promise.resolve();   // déjà chargé (harnais/tests)
+let styleSrcUrl = '';
+try { styleSrcUrl = (localStorage.getItem('ddj-style-src') || '').trim(); } catch (e) {}
+let localStyleFiles = {};   // { "styles.js": "…", "piano-ballad.js": "…" }
+try { localStyleFiles = JSON.parse(localStorage.getItem('ddj-local-styles') || '{}') || {}; } catch (e) {}
+function styleFileUrl(name) {
+  const base = styleSrcUrl ? styleSrcUrl.replace(/\/?$/, '/') : 'styles/';
+  return base + name;   // name contient déjà l'extension ; l'id est encodé par l'appelant
+}
+function loadStyleFile(fname) {
+  // 1) fichier local en mémoire -> évaluation directe (pose window.STYLE_DATA / window.STYLE_MANIFEST)
+  if (localStyleFiles[fname]) {
+    new Function('window', localStyleFiles[fname])(window);
+    return Promise.resolve();
+  }
+  // 2/3) URL distante ou dossier relatif -> balise <script> (les scripts classiques ne sont pas soumis à CORS)
   return new Promise((res, rej) => {
     const s = document.createElement('script');
-    s.src = 'styles/' + encodeURIComponent(id) + '.js';
+    s.src = styleFileUrl(fname);
     s.onload = () => res();
-    s.onerror = () => rej(new Error('style introuvable: styles/' + id + '.js'));
+    s.onerror = () => rej(new Error('fichier introuvable: ' + styleFileUrl(fname)));
     document.head.appendChild(s);
   });
+}
+function loadStyleScript(id) {
+  if (window.STYLE_DATA && window.STYLE_DATA.id === id) return Promise.resolve();   // déjà chargé (harnais/tests)
+  return loadStyleFile(encodeURIComponent(id) + '.js');
+}
+// Manifeste : styles.js local, sinon styles.js à la source (URL ou dossier relatif) ;
+// repli : déduit des noms de fichiers locaux (hors styles.js).
+async function loadManifest() {
+  window.STYLE_MANIFEST = null;
+  try { await loadStyleFile('styles.js'); } catch (e) { /* pas de styles.js à la source */ }
+  if (!window.STYLE_MANIFEST) {
+    const ids = Object.keys(localStyleFiles).filter(n => n !== 'styles.js' && n.endsWith('.js'));
+    if (ids.length) window.STYLE_MANIFEST = ids.map(n => ({ id: n.replace(/\.js$/, ''), name: n.replace(/\.js$/, '') }));
+  }
+  if (!window.STYLE_MANIFEST) throw new Error('aucun manifeste (styles.js) trouvé à la source des styles');
+}
+function updateSrcInfo() {
+  const n = Object.keys(localStyleFiles).length;
+  $('srcInfo').textContent = n ? ('📁 ' + n + ' fichier(s) local(aux)') : (styleSrcUrl ? ('🌐 ' + styleSrcUrl) : '📂 styles/ (relatif)');
 }
 let secButtons = [];
 function buildSectionButtons() {
@@ -91,11 +129,21 @@ function buildStyleSelect() {
     o.value = m.id; o.textContent = m.name;
     sel.appendChild(o);
   });
-  sel.value = currentStyleId;
+  if (currentStyleId) sel.value = currentStyleId;
   sel.onchange = () => {
     try { localStorage.setItem('ddj-style', sel.value); } catch (e) {}
     location.search = '?style=' + encodeURIComponent(sel.value);   // recharge la page sur le style choisi
   };
+}
+// Recharge manifeste + style actif depuis la source courante (appelé au boot et à chaque changement de source)
+async function refreshStyles() {
+  updateSrcInfo();
+  try { await loadManifest(); } catch (e) { log('⚠ ' + e.message); window.STYLE_MANIFEST = window.STYLE_MANIFEST || []; }
+  if (!currentStyleId && window.STYLE_MANIFEST.length) currentStyleId = window.STYLE_MANIFEST[0].id;
+  buildStyleSelect();
+  if (!currentStyleId) { log('⚠ aucun style à charger (manifeste vide)'); return; }
+  try { await loadStyleScript(currentStyleId); applyStyle(); }
+  catch (e) { log('⚠ ' + e.message + ' — aucune source de styles valide (URL, fichiers locaux, ou styles/ à côté de la page)'); }
 }
 function applyStyle() {
   STYLE = window.STYLE_DATA;
@@ -370,9 +418,30 @@ $('btnStart').onclick = () => {
 $('bpm').onchange = () => log('BPM ' + $('bpm').value);
 
 async function boot() {
-  buildStyleSelect();
-  try { await loadStyleScript(currentStyleId); applyStyle(); }
-  catch (e) { log('⚠ ' + e.message + ' — il faut styles/styles.js et styles/<id>.js à côté de index.html'); }
+  // v3.14 : réglages de la source des styles
+  const urlIn = $('styleSrcUrl');
+  urlIn.value = styleSrcUrl;
+  urlIn.onchange = () => {
+    styleSrcUrl = urlIn.value.trim();
+    try { localStorage.setItem('ddj-style-src', styleSrcUrl); } catch (e) {}
+    log('🌐 source des styles: ' + (styleSrcUrl || 'styles/ (relatif)'));
+    refreshStyles();
+  };
+  $('styleFiles').onchange = async (ev) => {
+    const files = [...ev.target.files];
+    for (const f of files) localStyleFiles[f.name] = await f.text();
+    try { localStorage.setItem('ddj-local-styles', JSON.stringify(localStyleFiles)); }
+    catch (e) { log('⚠ localStorage plein : fichiers gardés en mémoire seulement (perdus au rechargement)'); }
+    log('📁 ' + files.length + ' fichier(s) local(aux): ' + files.map(f => f.name).join(', '));
+    refreshStyles();
+  };
+  $('btnClearLocal').onclick = () => {
+    localStyleFiles = {};
+    try { localStorage.removeItem('ddj-local-styles'); } catch (e) {}
+    log('🧹 fichiers locaux oubliés');
+    refreshStyles();
+  };
+  await refreshStyles();
   initMidi().then(() => log('MIDI prêt. Mode Follow : branche un clavier en IN et joue un accord (ex. C E G B).'));
 }
 boot();
