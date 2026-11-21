@@ -18,8 +18,8 @@
 </style>
 </head>
 <body>
-<h1>🎹 Démo « directeur de jeu » — style « test » digéré (35 pistes) <span class="lbl" id="ver">v3.6 — 2026-11-21</span></h1>
-<div class="row"><span class="lbl">Mode Follow : chaque accord joué est suivi immédiatement par l'accompagnement (notes tenues ré-articulées sur le nouvel accord). « attendu » = prochain accord de la progression démo (I–vi–ii–V : Cmaj7, Am7, Dm7, G7) ; il avance quand tu joues cet accord. Reconnaissance : table des qualités JazzLab. v3.6 = voicing sensible à la qualité (un Cm joué s'entend en mineur) + changement d'accord appliqué au temps (prochaine pulsation). Log allégé horodaté. Si la version affichée n'est pas v3.6, vide le cache (Ctrl+F5).</span></div>
+<h1>🎹 Démo « directeur de jeu » — style « test » digéré (35 pistes) <span class="lbl" id="ver">v3.7 — 2026-11-21</span></h1>
+<div class="row"><span class="lbl">Mode Follow : chaque accord joué est suivi immédiatement par l'accompagnement (notes tenues ré-articulées sur le nouvel accord). « attendu » = prochain accord de la progression démo (I–vi–ii–V : Cmaj7, Am7, Dm7, G7) ; il avance quand tu joues cet accord. Reconnaissance : table des qualités JazzLab. v3.7 = voicing sensible à la qualité + accord appliqué au temps, sans double frappe au changement (revoice exclut les notes commençant à la pulsation). Si la version affichée n'est pas v3.7, vide le cache (Ctrl+F5).</span></div>
 <div class="row">
   <span class="lbl">MIDI in</span><select id="midiIn"></select>
   <span class="lbl">MIDI out</span><select id="midiOut"></select>
@@ -165,18 +165,21 @@ function onChordRecognized(root, q, name) {
   if (mode !== 'follow') return;
   const ints = (QUALITIES.find(x => x[0] === q) || QUALITIES[0])[1];
   pendingChord = { name, root, q, ints };
-  if (!playing) { followChord = pendingChord; pendingChord = null; }
+  if (!playing) { followChord = pendingChord; pendingChord = null; advanceProg(followChord); }
   log('👌 reconnu ' + name + (playing ? ' → application au prochain temps' : ''));
-  const match = (c) => c.root === root && (c.q === q || (q === '' && c.q === 'maj7'));
+}
+// avance la progression démo (affichage « attendu ») selon l'accord appliqué
+function advanceProg(c) {
+  const match = (x) => x.root === c.root && (x.q === c.q || (c.q === '' && x.q === 'maj7'));
   const exp = expectedChord();
   if (match(exp)) {
     progIdx = (progIdx + 1) % PROG.length;
     $('pos').textContent = 'attendu: ' + expectedChord().name;
-    log('🎼 accord reconnu ' + name + ' → avance, attendu: ' + expectedChord().name);
+    log('🎼 accord reconnu ' + c.name + ' → avance, attendu: ' + expectedChord().name);
   } else {
     const idx = PROG.findIndex(match);
     if (idx >= 0) { progIdx = idx; $('pos').textContent = 'attendu: ' + expectedChord().name; }
-    log('🎶 accord ' + name + ' suivi (attendu ' + expectedChord().name + ')');
+    log('🎶 accord ' + c.name + ' suivi (attendu ' + expectedChord().name + ')');
   }
 }
 $('modeAuto').onclick = () => { mode = 'auto'; followChord = null; pendingChord = null; $('modeAuto').classList.add('on'); $('modeFollow').classList.remove('on'); log('mode Auto (séquence)'); };
@@ -213,14 +216,16 @@ function voicedNote(role, src, chord) {
   return clampN(best);
 }
 
-// Au changement d'accord (appliqué au temps) : coupe les notes tenues et les rejoue voicées sur le nouvel accord.
+// Au changement d'accord (appliqué au temps) : coupe les notes tenues qui changent de hauteur
+// et les rejoue sur le nouvel accord. Les hauteurs inchangées (ou déjà présentes ailleurs) ne sont
+// pas re-frappées, et les notes commençant à cette pulsation sont envoyées par l'ordonnanceur.
 function revoiceHeld(atTick) {
   if (!playing || !outPort || mode !== 'follow' || !followChord) return;
   if (chordKey(followChord) === chordKey(appliedChord)) { log('… revoice ignoré (accord identique: ' + followChord.name + ')'); return; }
   const PT = patternTicks(section);
   const local = ((atTick - patternStartTick) % PT + PT) % PT;
   const now = performance.now();
-  let n = 0;
+  const held = [];
   for (const role of Object.keys(CATALOG[section] || {})) {
     if (role === 'Perc' || role === 'Drums') continue;   // sons de batterie, pas de hauteur
     const tr = CATALOG[section][role];
@@ -228,16 +233,20 @@ function revoiceHeld(atTick) {
       if (e[1] !== 1) continue;
       let off = Infinity;   // note-off le plus proche après ce note-on (même note)
       for (const o of tr.ev) if (o[1] === 0 && o[2] === e[2] && o[0] > e[0]) off = Math.min(off, o[0]);
-      if (e[0] <= local && local < off) {   // note actuellement tenue
+      if (e[0] < local && local < off) {   // note tenue commencée avant ce tick
         const oldNote = appliedChord ? voicedNote(role, e[2], appliedChord) : clampN(e[2]);
         const newNote = voicedNote(role, e[2], followChord);
-        if (oldNote !== newNote) {
-          outPort.send([0x80 | tr.ch, oldNote, 0], now);
-          outPort.send([0x90 | tr.ch, newNote, e[3]], now);
-          n++;
-        }
+        held.push({ ch: tr.ch, vel: e[3], oldNote, newNote });
       }
     }
+  }
+  const staying = new Set(held.filter(h => h.oldNote === h.newNote).map(h => h.ch + '|' + h.oldNote));
+  let n = 0;
+  for (const h of held) {
+    if (h.oldNote === h.newNote) continue;                 // hauteur inchangée : on laisse sonner
+    outPort.send([0x80 | h.ch, h.oldNote, 0], now);
+    if (!staying.has(h.ch + '|' + h.newNote)) outPort.send([0x90 | h.ch, h.newNote, h.vel], now);   // pas de re-frappe si la hauteur est déjà tenue
+    n++;
   }
   log('↻ revoice ' + (appliedChord ? appliedChord.name : '—') + ' → ' + followChord.name + ' : ' + n + ' note(s) ré-articulée(s)');
 }
@@ -250,6 +259,7 @@ function schedule() {
     if (mode === 'follow' && pendingChord && t % DIV === 0) {   // application au temps (pulsation)
       followChord = pendingChord; pendingChord = null;
       log('🎼 accord envoyé au player: ' + followChord.name + ' (root ' + followChord.root + ', q "' + followChord.q + '")');
+      advanceProg(followChord);
       revoiceHeld(t);
     }
     if (mode === 'auto' && t % (2 * 4 * DIV) === 0 && t > patternStartTick) {
